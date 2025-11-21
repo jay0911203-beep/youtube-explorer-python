@@ -1,10 +1,15 @@
 
 import json
 import os
+import sys
+
+# 3rd party library import setup
 try:
+    # Netlify 빌드 시 설치된 패키지 경로 추가
+    sys.path.append(os.path.join(os.path.dirname(__file__), "node_modules"))
     from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 except ImportError:
-    # 의존성 설치 실패 시 에러 처리
+    # 로컬 테스트용 더미 (실제 배포시엔 requirements.txt에 의해 설치됨)
     YouTubeTranscriptApi = None
 
 def handler(event, context):
@@ -17,21 +22,21 @@ def handler(event, context):
     if event['httpMethod'] == 'OPTIONS':
         return {'statusCode': 200, 'headers': headers, 'body': ''}
 
-    if YouTubeTranscriptApi is None:
-        return {
-            'statusCode': 500,
-            'headers': headers,
-            'body': json.dumps({'error': 'Server Error: Dependencies not installed'})
-        }
-
     params = event.get('queryStringParameters', {})
     video_id = params.get('videoId')
 
     if not video_id:
-        return {'statusCode': 400, 'headers': headers, 'body': json.dumps({'error': 'Video ID required'})}
+        return {
+            'statusCode': 400,
+            'headers': headers,
+            'body': json.dumps({'error': 'Video ID is required'})
+        }
 
     try:
+        # 1. 자막 리스트 가져오기
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+
+        # 2. 언어 우선순위 설정 (한국어 -> 영어 -> 자동생성)
         try:
             transcript = transcript_list.find_transcript(['ko'])
         except:
@@ -40,18 +45,24 @@ def handler(event, context):
             except:
                 transcript = transcript_list.find_generated_transcript(['ko', 'en'])
 
+        # 3. 자막 데이터 가져오기
         data = transcript.fetch()
-        full_text = " ".join([item['text'] for item in data])
         
+        # 4. 텍스트 합치기
+        full_text = " ".join([item['text'] for item in data])
+        full_text = full_text.replace('\n', ' ').replace('  ', ' ')
+
         return {
             'statusCode': 200,
             'headers': headers,
             'body': json.dumps({
                 'success': True,
                 'transcript': full_text,
-                'lang': transcript.language_code
+                'lang': transcript.language_code,
+                'is_generated': transcript.is_generated
             })
         }
+
     except Exception as e:
         return {
             'statusCode': 500,
