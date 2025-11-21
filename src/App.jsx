@@ -116,11 +116,12 @@ export default function App() {
     } catch(e){}
   };
 
-  // [핵심] 스텔스 모드 (DOMParser 적용 - 파싱 오류 해결)
+  // [핵심] 스텔스 모드 (Regex Parser 적용 - 파싱 오류 해결)
   const fetchStealthTranscript = async (videoId, addLog) => {
     const PROXIES = [
       'https://corsproxy.io/?',
       'https://api.allorigins.win/raw?url=', 
+      'https://api.codetabs.com/v1/proxy?quest='
     ];
 
     for (const proxy of PROXIES) {
@@ -139,6 +140,7 @@ export default function App() {
 
         if (!tracks || tracks.length === 0) throw new Error('자막 트랙 없음');
 
+        // 우선순위: 한국어 > 영어 > 첫번째
         const track = tracks.find(t => t.languageCode === 'ko') || 
                       tracks.find(t => t.languageCode === 'en') || 
                       tracks[0];
@@ -149,21 +151,25 @@ export default function App() {
         const xmlRes = await fetch(xmlUrl);
         const xml = await xmlRes.text();
 
-        // [개선됨] DOMParser를 사용하여 XML을 안전하게 파싱
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(xml, "text/xml");
-        const textNodes = xmlDoc.getElementsByTagName("text");
-        
-        let extractedText = [];
-        for (let i = 0; i < textNodes.length; i++) {
-            const text = textNodes[i].textContent;
-            // HTML 엔티티 디코딩
-            const decodedText = text.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-            extractedText.push(decodedText);
+        // [수정] DOMParser 대신 정규식 사용 (더 강력함)
+        const textSegments = xml.match(/<text.*?>(.*?)<\/text>/g);
+        if (!textSegments || textSegments.length === 0) {
+             throw new Error('XML 파싱 실패 (세그먼트 없음)');
         }
-        
-        // 텍스트 합치기 및 공백 정리
-        const cleanText = extractedText.join(' ').replace(/\s+/g, ' ').trim();
+
+        const cleanText = textSegments
+          .map(segment => {
+              // 태그 내부 내용만 추출
+              return segment.replace(/<[^>]+>/g, '')
+                            .replace(/&#39;/g, "'")
+                            .replace(/&quot;/g, '"')
+                            .replace(/&amp;/g, '&')
+                            .replace(/&lt;/g, '<')
+                            .replace(/&gt;/g, '>');
+          })
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
 
         if (!cleanText) throw new Error('파싱된 텍스트가 비어있음');
 
@@ -311,7 +317,7 @@ export default function App() {
             <form onSubmit={searchChannels} className="flex gap-2 max-w-lg mx-auto mb-8"><input value={query} onChange={e=>setQuery(e.target.value)} className="flex-1 p-3 rounded-full border shadow-sm" placeholder="채널 검색"/><button className="bg-red-600 text-white px-6 rounded-full">검색</button></form>
             {loading && <div className="flex justify-center py-10"><Loader2 className="animate-spin text-red-600" size={40}/></div>}
             {viewMode === 'search' && !loading && <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">{channels.map(c => (<div key={c.id.channelId} onClick={()=>handleChannelClick(c.id.channelId, decodeHtml(c.snippet.title))} className="bg-white p-4 rounded-xl shadow cursor-pointer hover:shadow-lg text-center"><img src={c.snippet.thumbnails.medium.url} className="w-20 h-20 rounded-full mx-auto mb-2"/><h3 className="font-bold line-clamp-1">{decodeHtml(c.snippet.title)}</h3></div>))}</div>}
-            {viewMode === 'videos' && !loading && <div><button onClick={()=>setViewMode('search')} className="mb-4 flex items-center gap-1 text-sm font-bold"><ChevronLeft size={16}/> 뒤로가기</button><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">{channelVideos.map(v => (<div key={v.id} className="bg-white rounded-xl shadow overflow-hidden"><div className="aspect-video bg-gray-200 relative"><img src={v.snippet.thumbnails.medium?.url} className="w-full h-full object-cover"/><div className="absolute inset-0 flex items-center justify-center bg-black/10 opacity-0 hover:opacity-100 transition-opacity"><Play className="text-white" fill="white"/></div></div><div className="p-3"><h3 className="font-bold text-sm line-clamp-2 mb-3 h-10">{decodeHtml(v.snippet.title)}</h3><button onClick={()=>getTranscript(decodeHtml(v.snippet.title), v.snippet.resourceId.videoId)} className="w-full py-2 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100 flex items-center justify-center gap-1"><Globe size={12}/> 자막 추출</button></div></div>))}</div>{nextPageToken && <div className="text-center mt-6"><button onClick={loadMore} className="px-6 py-2 bg-white border rounded-full text-sm">더 보기</button></div>}</div>}
+            {viewMode === 'videos' && !loading && <div><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">{channelVideos.map(v => (<div key={v.id} className="bg-white rounded-xl shadow overflow-hidden"><div className="aspect-video bg-gray-200 relative"><img src={v.snippet.thumbnails.medium?.url} className="w-full h-full object-cover"/><div className="absolute inset-0 flex items-center justify-center bg-black/10 opacity-0 hover:opacity-100 transition-opacity"><Play className="text-white" fill="white"/></div></div><div className="p-3"><h3 className="font-bold text-sm line-clamp-2 mb-3 h-10">{decodeHtml(v.snippet.title)}</h3><button onClick={()=>getTranscript(decodeHtml(v.snippet.title), v.snippet.resourceId.videoId)} className="w-full py-2 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100 flex items-center justify-center gap-1"><Globe size={12}/> 자막 추출</button></div></div>))}</div>{nextPageToken && <div className="text-center mt-6"><button onClick={loadMore} className="px-6 py-2 bg-white border rounded-full text-sm">더 보기</button></div>}</div>}
           </>
         )}
       </main>
