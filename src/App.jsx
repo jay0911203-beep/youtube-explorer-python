@@ -74,7 +74,6 @@ export default function App() {
   const handleQuickSync = async () => {
     setSyncModal({isOpen:true, step:'processing', message:'업데이트 중...'});
     try {
-      // (Self-update logic place holder)
       setSyncModal({isOpen:true, step:'success', message:'업데이트 성공!'});
     } catch(e) { setSyncModal({isOpen:true, step:'error', message:e.message}); }
   };
@@ -116,7 +115,7 @@ export default function App() {
     } catch(e){}
   };
 
-  // [핵심] 스텔스 모드 (Regex Parser 적용 - 파싱 오류 해결)
+  // [핵심] 스텔스 모드 개선 (줄바꿈 지원 Regex)
   const fetchStealthTranscript = async (videoId, addLog) => {
     const PROXIES = [
       'https://corsproxy.io/?',
@@ -140,7 +139,6 @@ export default function App() {
 
         if (!tracks || tracks.length === 0) throw new Error('자막 트랙 없음');
 
-        // 우선순위: 한국어 > 영어 > 첫번째
         const track = tracks.find(t => t.languageCode === 'ko') || 
                       tracks.find(t => t.languageCode === 'en') || 
                       tracks[0];
@@ -151,27 +149,33 @@ export default function App() {
         const xmlRes = await fetch(xmlUrl);
         const xml = await xmlRes.text();
 
-        // [수정] DOMParser 대신 정규식 사용 (더 강력함)
-        const textSegments = xml.match(/<text.*?>(.*?)<\/text>/g);
-        if (!textSegments || textSegments.length === 0) {
-             throw new Error('XML 파싱 실패 (세그먼트 없음)');
+        // [수정됨] 강력한 Regex Parser (줄바꿈 지원 [\s\S])
+        // <text ...> 내용 </text> 또는 <p ...> 내용 </p> 패턴 매칭
+        let textSegments = xml.match(/<text[^>]*>([\s\S]*?)<\/text>/g);
+        if (!textSegments) {
+            textSegments = xml.match(/<p[^>]*>([\s\S]*?)<\/p>/g);
         }
 
-        const cleanText = textSegments
-          .map(segment => {
-              // 태그 내부 내용만 추출
-              return segment.replace(/<[^>]+>/g, '')
-                            .replace(/&#39;/g, "'")
-                            .replace(/&quot;/g, '"')
-                            .replace(/&amp;/g, '&')
-                            .replace(/&lt;/g, '<')
-                            .replace(/&gt;/g, '>');
-          })
-          .join(' ')
-          .replace(/\s+/g, ' ')
-          .trim();
+        let cleanText = "";
 
-        if (!cleanText) throw new Error('파싱된 텍스트가 비어있음');
+        if (textSegments && textSegments.length > 0) {
+           cleanText = textSegments
+            .map(segment => {
+                return segment.replace(/<[^>]+>/g, '') // 태그 제거
+                              .replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&') // 엔티티 복원
+                              .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                              .replace(/\n/g, ' '); // 줄바꿈을 공백으로
+            })
+            .join(' ');
+        } else {
+            // 최후의 수단: 모든 태그 제거하고 텍스트만 추출
+            addLog("표준 태그 파싱 실패, 강제 추출 시도...");
+            cleanText = xml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+        }
+        
+        cleanText = cleanText.replace(/\s+/g, ' ').trim();
+
+        if (!cleanText || cleanText.length < 10) throw new Error('추출된 텍스트가 너무 짧거나 비어있음');
 
         return { text: cleanText, lang: track.languageCode };
 
