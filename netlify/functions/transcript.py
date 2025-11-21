@@ -20,7 +20,8 @@ def handler(event, context):
     if event['httpMethod'] == 'OPTIONS':
         return {'statusCode': 200, 'headers': headers, 'body': ''}
 
-    video_id = event.get('queryStringParameters', {}).get('videoId')
+    params = event.get('queryStringParameters', {})
+    video_id = params.get('videoId')
 
     if not video_id:
         return {'statusCode': 400, 'headers': headers, 'body': json.dumps({'error': 'Video ID required'})}
@@ -29,10 +30,8 @@ def handler(event, context):
          return {'statusCode': 500, 'headers': headers, 'body': json.dumps({'error': 'Server config error'})}
 
     try:
-        # 1. 자막 리스트 조회
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
-        # 2. 우선순위: 한국어 -> 영어 -> 자동생성
         try:
             transcript = transcript_list.find_transcript(['ko'])
         except:
@@ -41,7 +40,6 @@ def handler(event, context):
             except:
                 transcript = transcript_list.find_generated_transcript(['ko', 'en'])
 
-        # 3. 데이터 가져오기
         data = transcript.fetch()
         full_text = " ".join([item['text'] for item in data])
         
