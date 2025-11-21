@@ -3,7 +3,7 @@ import json
 import sys
 import os
 
-# 라이브러리 경로 설정 (Netlify 환경)
+# 라이브러리 경로 설정
 try:
     sys.path.append(os.path.join(os.path.dirname(__file__), "node_modules"))
     from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
