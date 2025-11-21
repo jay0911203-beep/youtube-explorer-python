@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Play, Settings, X, Loader2, Youtube, AlertCircle, User, Calendar, Eye, FileText, ChevronLeft, Download, Copy, Github, RefreshCw, Globe, ShieldCheck } from 'lucide-react';
+import { Search, Play, Settings, X, Loader2, Youtube, AlertCircle, User, Calendar, Eye, FileText, ChevronLeft, Download, Copy, Github, RefreshCw, Globe, ShieldCheck, Check } from 'lucide-react';
 
 export default function App() {
   const [apiKey, setApiKey] = useState('');
@@ -15,6 +15,7 @@ export default function App() {
   const [transcriptModal, setTranscriptModal] = useState({ 
     isOpen: false, videoId: null, title: '', content: '', loading: false, status: '', logs: []
   });
+  const [copySuccess, setCopySuccess] = useState(false);
 
   // GitHub State
   const [showGithubModal, setShowGithubModal] = useState(false);
@@ -80,7 +81,6 @@ export default function App() {
 
   const decodeHtml = (h) => { try { const t = document.createElement("textarea"); t.innerHTML = h; return t.value; } catch(e){return h;} };
 
-  // YouTube Logic
   const searchChannels = async (e) => {
     e.preventDefault(); if(!query.trim()) return; setLoading(true); setViewMode('search');
     try {
@@ -116,12 +116,8 @@ export default function App() {
     } catch(e){}
   };
 
-  // =====================================================================
-  // [핵심] 스텔스 모드: Direct Page Parsing (CORS Proxy 사용)
-  // API 차단이나 Piped 서버 오류 시, 유튜브 페이지를 직접 해석합니다.
-  // =====================================================================
+  // [핵심] 스텔스 모드 (DOMParser 적용 - 파싱 오류 해결)
   const fetchStealthTranscript = async (videoId, addLog) => {
-    // 여러 프록시를 순환하여 차단 확률 낮춤
     const PROXIES = [
       'https://corsproxy.io/?',
       'https://api.allorigins.win/raw?url=', 
@@ -130,45 +126,46 @@ export default function App() {
     for (const proxy of PROXIES) {
       try {
         addLog(`프록시 시도: ${new URL(proxy).hostname}`);
-        
-        // 1. HTML 원본 가져오기
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         const htmlRes = await fetch(`${proxy}${encodeURIComponent(videoUrl)}`);
         if (!htmlRes.ok) continue;
         const html = await htmlRes.text();
 
-        // 2. 플레이어 데이터(ytInitialPlayerResponse) 추출
         const match = html.match(/var ytInitialPlayerResponse = ({.*?});/s);
         if (!match) continue;
         
         const data = JSON.parse(match[1]);
         const tracks = data.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
-        if (!tracks || tracks.length === 0) {
-          throw new Error('자막 트랙이 존재하지 않습니다.');
-        }
+        if (!tracks || tracks.length === 0) throw new Error('자막 트랙 없음');
 
-        // 3. 언어 선택 (한국어 > 영어 > 첫번째)
         const track = tracks.find(t => t.languageCode === 'ko') || 
                       tracks.find(t => t.languageCode === 'en') || 
                       tracks[0];
 
         addLog(`자막 발견: ${track.name.simpleText} (${track.languageCode})`);
 
-        // 4. 자막 XML 다운로드
         const xmlUrl = `${proxy}${encodeURIComponent(track.baseUrl)}`;
         const xmlRes = await fetch(xmlUrl);
         const xml = await xmlRes.text();
 
-        // 5. XML -> 텍스트 변환
-        const cleanText = xml
-          .replace(/<text.*?>(.*?)<\/text>/g, '$1 ')
-          .replace(/<[^>]+>/g, '')
-          .replace(/&#39;/g, "'")
-          .replace(/&quot;/g, '"')
-          .replace(/&amp;/g, '&')
-          .replace(/\s+/g, ' ')
-          .trim();
+        // [개선됨] DOMParser를 사용하여 XML을 안전하게 파싱
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xml, "text/xml");
+        const textNodes = xmlDoc.getElementsByTagName("text");
+        
+        let extractedText = [];
+        for (let i = 0; i < textNodes.length; i++) {
+            const text = textNodes[i].textContent;
+            // HTML 엔티티 디코딩
+            const decodedText = text.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+            extractedText.push(decodedText);
+        }
+        
+        // 텍스트 합치기 및 공백 정리
+        const cleanText = extractedText.join(' ').replace(/\s+/g, ' ').trim();
+
+        if (!cleanText) throw new Error('파싱된 텍스트가 비어있음');
 
         return { text: cleanText, lang: track.languageCode };
 
@@ -179,18 +176,18 @@ export default function App() {
     throw new Error('모든 프록시 경로 실패');
   };
 
-  // 메인 자막 요청 함수
   const getTranscript = async (title, videoId) => {
     setTranscriptModal({ isOpen: true, videoId, title, content: '', loading: true, status: '연결 중...', logs: [] });
     const addLog = (msg) => setTranscriptModal(p => ({...p, logs: [...p.logs, msg], status: msg}));
     
     try {
-      // 1단계: Netlify Python Server 시도
       addLog('서버(Netlify) 연결 시도...');
       try {
         const res = await fetch(`/.netlify/functions/transcript?videoId=${videoId}`);
+        const contentType = res.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) throw new Error("Invalid Server Response");
+
         const data = await res.json();
-        
         if (res.ok && data.success) {
           setTranscriptModal(p => ({...p, loading: false, content: data.transcript, status: `완료 (Server: ${data.lang})`}));
           return;
@@ -200,8 +197,7 @@ export default function App() {
         addLog(`서버 연결 실패 (${serverErr.message})`);
       }
 
-      // 2단계: 스텔스 모드 (Direct Parsing)
-      addLog('⚠️ 서버 차단 감지. 스텔스 모드(직접 추출) 전환...');
+      addLog('⚠️ 스텔스 모드(직접 추출) 전환...');
       const result = await fetchStealthTranscript(videoId, addLog);
       
       setTranscriptModal(p => ({
@@ -215,10 +211,31 @@ export default function App() {
       setTranscriptModal(p => ({
         ...p, 
         loading: false, 
-        error: '자막을 가져올 수 없습니다.', 
+        error: '자막을 가져올 수 없습니다. (영상에 자막이 없는 것 같습니다)', 
         status: '최종 실패'
       }));
     }
+  };
+
+  const copyToClipboard = () => {
+      if (!transcriptModal.content) return;
+      navigator.clipboard.writeText(transcriptModal.content).then(() => {
+          setCopySuccess(true);
+          setTimeout(() => setCopySuccess(false), 2000);
+      }).catch(() => {
+          alert("복사 권한이 없습니다. 텍스트를 직접 선택해서 복사해주세요.");
+      });
+  };
+
+  const downloadText = () => {
+      if (!transcriptModal.content) return;
+      const element = document.createElement("a");
+      const file = new Blob([transcriptModal.content], {type: 'text/plain'});
+      element.href = URL.createObjectURL(file);
+      element.download = `${transcriptModal.title}_transcript.txt`;
+      document.body.appendChild(element);
+      element.click();
+      document.body.removeChild(element);
   };
 
   return (
@@ -252,7 +269,7 @@ export default function App() {
                   </div>
                 </div>
               ) : transcriptModal.error ? (
-                <div className="h-full flex flex-col items-center justify-center text-red-600 text-center">
+                <div className="h-full flex flex-col items-center justify-center text-center text-red-600 p-4">
                   <AlertCircle size={48} className="mb-2"/>
                   <p className="font-bold">{transcriptModal.error}</p>
                   <div className="text-xs text-gray-400 mt-4 max-w-md text-left bg-gray-50 p-2 rounded">
@@ -262,18 +279,28 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{transcriptModal.content}</p>
-                  <div className="text-xs text-right text-green-600 mt-4 flex justify-end items-center gap-1"><ShieldCheck size={12}/> {transcriptModal.status}</div>
+                  <textarea 
+                    className="w-full h-full p-4 text-sm leading-relaxed resize-none border-none focus:ring-0 bg-gray-50 rounded-lg"
+                    value={transcriptModal.content}
+                    readOnly
+                  />
+                  <div className="text-xs text-right text-green-600 mt-2 flex justify-end items-center gap-1"><ShieldCheck size={12}/> {transcriptModal.status}</div>
                 </>
               )}
             </div>
-            <div className="p-4 border-t text-right">
-              <button onClick={() => navigator.clipboard.writeText(transcriptModal.content)} className="px-4 py-2 bg-gray-900 text-white rounded text-sm flex items-center gap-2 ml-auto"><Copy size={14}/> 복사하기</button>
+            <div className="p-4 border-t flex justify-end gap-2">
+              <button onClick={copyToClipboard} className="px-4 py-2 bg-white border text-gray-700 rounded text-sm flex items-center gap-2 hover:bg-gray-50">
+                {copySuccess ? <Check size={14} className="text-green-600"/> : <Copy size={14}/>} {copySuccess ? '복사됨' : '복사'}
+              </button>
+              <button onClick={downloadText} className="px-4 py-2 bg-gray-900 text-white rounded text-sm flex items-center gap-2 hover:bg-black">
+                <Download size={14}/> 다운로드
+              </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Sync/Github Modals */}
       {syncModal.isOpen && <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center"><div className="bg-white p-6 rounded-xl shadow-xl max-w-sm w-full text-center"><h3 className="font-bold text-lg mb-4">{syncModal.step==='confirm'?'GitHub 동기화':'상태'}</h3><p className="mb-6 text-gray-600">{syncModal.message}</p>{syncModal.step==='confirm' ? <div className="flex gap-2"><button onClick={()=>setSyncModal({isOpen:false})} className="flex-1 border py-2 rounded">취소</button><button onClick={handleQuickSync} className="flex-1 bg-blue-600 text-white py-2 rounded">확인</button></div> : <button onClick={()=>setSyncModal({isOpen:false})} className="w-full bg-gray-900 text-white py-2 rounded">닫기</button>}</div></div>}
       {showGithubModal && <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"><div className="bg-white p-6 rounded-xl w-full max-w-md"><h3 className="font-bold mb-4">GitHub 연결</h3><input className="w-full border p-2 mb-2 rounded" placeholder="Username" value={ghUsername} onChange={e=>setGhUsername(e.target.value)}/><input className="w-full border p-2 mb-2 rounded" placeholder="Repository" value={ghRepoName} onChange={e=>setGhRepoName(e.target.value)}/><input type="password" className="w-full border p-2 mb-4 rounded" placeholder="Token" value={ghToken} onChange={e=>setGhToken(e.target.value)}/><div className="flex gap-2"><button onClick={()=>handleDeploy('create')} className="flex-1 bg-gray-900 text-white py-2 rounded">생성</button><button onClick={()=>handleDeploy('update')} className="flex-1 border py-2 rounded">업데이트</button></div><button onClick={()=>setShowGithubModal(false)} className="mt-4 w-full text-gray-500 text-xs">닫기</button></div></div>}
 
